@@ -9,13 +9,14 @@ from apscheduler.triggers.cron import CronTrigger
 from noncommands import haikudetector
 from noncommands import imchecker
 from noncommands import reminderLoop
+from noncommands import birthdayLoop
 from noncommands import antimayhem
 from noncommands import scooby
 
-import discord
+import nextcord
 import yaml
-from discord.ext import commands, tasks
-from discord.ext.commands import Bot
+from nextcord.ext import commands, tasks
+from nextcord.ext.commands import Bot
 
 if "DadBot" not in str(os.getcwd()):
     os.chdir("./DadBot")
@@ -23,12 +24,13 @@ if "DadBot" not in str(os.getcwd()):
 with open("config.yaml") as file:
     config = yaml.load(file, Loader=yaml.FullLoader)
 
-intents = discord.Intents.default()
+intents = nextcord.Intents.default()
 
 bot = Bot(command_prefix=config["bot_prefix"], intents=intents)
 
 imChecker = imchecker.ImChecker()
 reminderChecker = reminderLoop.ReminderLoop()
+birthdayChecker = birthdayLoop.BirthdayLoop(bot)
 antiMayhem = antimayhem.AntiMayhem()
 haikuDetector = haikudetector.HaikuDetector()
 scooby = scooby.Scooby(bot)
@@ -37,7 +39,7 @@ scooby = scooby.Scooby(bot)
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
-    print(f"Discord.py API version: {discord.__version__}")
+    print(f"nextcord.py API version: {nextcord.__version__}")
     print(f"Python version: {platform.python_version()}")
     print(f"Running on: {platform.system()} {platform.release()} ({os.name})")
     print("-------------------")
@@ -48,10 +50,10 @@ async def on_ready():
 @tasks.loop(minutes=1.0)
 async def status_task():
     statuses = ["with your mom"]
-    await bot.change_presence(activity=discord.Game(random.choice(statuses)))
+    await bot.change_presence(activity=nextcord.Game(random.choice(statuses)))
 
 
-# Removes the default help command of discord.py to be able to create our custom help command.
+# Removes the default help command of nextcord.py to be able to create our custom help command.
 bot.remove_command("help")
 
 if __name__ == "__main__":
@@ -77,11 +79,10 @@ async def on_message(message):
     if message.author.id in config["blacklist"]:
         return
     
-    await imChecker.checkIm(message)
-
-    await antiMayhem.gotem(message)
-
-    await haikuDetector.checkForHaiku(message)
+    if not re.search("(\|\|[\S\s]*\|\|)", message.content):
+        await imChecker.checkIm(message)
+        await antiMayhem.gotem(message)
+        await haikuDetector.checkForHaiku(message)
 
     await bot.process_commands(message)
 
@@ -104,14 +105,14 @@ async def on_command_error(context, error):
         minutes, seconds = divmod(error.retry_after, 60)
         hours, minutes = divmod(minutes, 60)
         hours = hours % 24
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             title="Hey, please slow down!",
             description=f"You can use this command again in {f'{round(hours)} hours' if round(hours) > 0 else ''} {f'{round(minutes)} minutes' if round(minutes) > 0 else ''} {f'{round(seconds)} seconds' if round(seconds) > 0 else ''}.",
             color=config["error"]
         )
         await context.send(embed=embed)
     elif isinstance(error, commands.MissingPermissions):
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             title="Error!",
             description="You are missing the permission `" + ", ".join(
                 error.missing_perms) + "` to execute this command!",
@@ -121,13 +122,14 @@ async def on_command_error(context, error):
     raise error
 
 @tasks.loop(seconds=5)
-async def checkReminders():
+async def checkTimes():
     await reminderChecker.checkReminders(bot)
     await reminderChecker.deleteOldReminders(bot)
 
-checkReminders.start()
+checkTimes.start()
 scheduler = AsyncIOScheduler()
-scheduler.add_job(scooby.whatsTheMove, CronTrigger(hour = "19", minute = "0", second = "0", timezone="EST"))
-scheduler.add_job(scooby.praiseFireGator, CronTrigger(day_of_week="thu", hour = "0", minute = "0", second = "0", timezone="EST"))
+scheduler.add_job(scooby.whatsTheMove, CronTrigger(hour = "18", minute = "0", second = "0", timezone="EST"))
+scheduler.add_job(birthdayChecker.checkBirthdays, CronTrigger(hour = "9", minute = "0", second = "0", timezone="EST"))
+scheduler.add_job(scooby.praiseFireGator, CronTrigger(day_of_week="wed", hour = "23", minute = "0", second = "0", timezone="EST"))
 scheduler.start()
 bot.run(config["token"])

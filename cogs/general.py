@@ -8,13 +8,16 @@ import dateparser as dp
 import pytz
 import datetime
 from dateparser.search import search_dates
+from colour import Color
 
 import aiohttp
-import discord
+import nextcord
+import requests
 import yaml
-from discord.ext import commands
-from discord.ext import tasks
+from nextcord.ext import commands
+from nextcord.ext import tasks
 from noncommands import summarizer
+from noncommands import birthdayLoop
 if "DadBot" not in str(os.getcwd()):
     os.chdir("./DadBot")
 with open("config.yaml") as file:
@@ -24,13 +27,14 @@ with open("config.yaml") as file:
 class general(commands.Cog, name="general"):
     def __init__(self, bot):
         self.bot = bot
+        self.birthdayLoop = birthdayLoop.BirthdayLoop(bot)
 
     @commands.command(name="info", aliases=["botinfo"])
     async def info(self, context):
         """
         Get some useful (or not) information about the bot.
         """
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             description="The server's dad",
             color=config["success"]
         )
@@ -74,7 +78,7 @@ class general(commands.Cog, name="general"):
         time = time.split(" ")
         time = time[0]
 
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             title="**Server Name:**",
             description=f"{server}",
             color=config["success"]
@@ -102,13 +106,65 @@ class general(commands.Cog, name="general"):
             text=f"Created at: {time}"
         )
         await context.send(embed=embed)
+    
+    @commands.command(name="setbirthday")
+    async def setbirthday(self, context, *birthday):
+        """
+        Dad always remembers birthdays.
+        """
+        mydb = mysql.connector.connect(
+            host=config["dbhost"],
+            user=config["dbuser"],
+            password=config["dbpassword"],
+            database=config["databasename"],
+            autocommit=True
+        )
+        timeStr = " ".join(birthday).lower()
+        time = dp.parse(timeStr, settings={'TIMEZONE': 'US/Eastern', 'RETURN_AS_TIMEZONE_AWARE': True, 'PREFER_DATES_FROM': 'future', 'PREFER_DAY_OF_MONTH': 'first'})
+        timeWords = timeStr
+        f = '%Y-%m-%d %H:%M:%S'
+        if time is None:
+            searchRes = search_dates(timeStr, settings={'TIMEZONE': 'US/Eastern', 'RETURN_AS_TIMEZONE_AWARE': True, 'PREFER_DATES_FROM': 'future', 'PREFER_DAY_OF_MONTH': 'first'}, languages=['en'])
+            for t in searchRes:
+                time = t[1]
+                timeWords = t[0]
+                break
+            
+        if time is not None:
+            timeUTC = dp.parse(time.strftime(f), settings={'TIMEZONE': 'US/Eastern', 'TO_TIMEZONE': 'UTC'})
+            mycursor = mydb.cursor(buffered=True)
+            mycursor.execute(f"DELETE FROM birthdays WHERE author = '{context.message.author}'")
+            mydb.commit()
+            mycursor.execute("INSERT INTO birthdays (author, mention, channel_id, birthday) VALUES ('"+ str(context.message.author) +"', '"+ str(context.message.author.mention) +"', '"+ str(context.channel.id) +"', '"+ timeUTC.strftime(f) +"')")
+            print(time)
+            await context.reply("Your Birthday is set for: " + time.strftime(f) + " EST \n\nHere's the time I read: " + timeWords)
+            mydb.commit()
+            mycursor.close()
+            mydb.close()
+        else:
+            await context.reply("I can't understand that time, try again but differently")
+    
+    @commands.command(name="todaysbirthdays")
+    async def todaysbirthdays(self, context):
+        await self.birthdayLoop.checkBirthdays()
+
+    @commands.command(name="nobitches")
+    async def nobitches(self, context, *text):
+        params = {
+            "template_id": "370867422", 
+            "username": "nanosplitter", 
+            "password": config["imgflip_pass"],
+            "text0": " ".join(text),
+        }
+        r = requests.post("https://api.imgflip.com/caption_image", params=params)
+        await context.send(r.json()["data"]["url"])
 
     @commands.command(name="ping")
     async def ping(self, context):
         """
         Check if the bot is alive.
         """
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             color=config["success"]
         )
         embed.add_field(
@@ -120,6 +176,70 @@ class general(commands.Cog, name="general"):
             text=f"Pong request by {context.message.author}"
         )
         await context.send(embed=embed)
+    
+    def luminance(self, color):
+        """
+        Calculate the luminance of a color.
+        """
+        red = Color(color).red
+        green = Color(color).green
+        blue = Color(color).blue
+
+        red = red / 12.92 if red <= 0.04045 else ((red + 0.055) / 1.055)**2.4
+        green = green / 12.92 if green <= 0.04045 else ((green + 0.055) / 1.055)**2.4
+        blue = blue / 12.92 if blue <= 0.04045 else ((blue + 0.055) / 1.055)**2.4
+
+        print(color, red, green, blue)
+
+        return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+
+    def contrast(self, color1, color2):
+        """
+        Calculate the contrast between two colors.
+        """
+        lum1 = self.luminance(color1)
+        lum2 = self.luminance(color2)
+
+        return (max(lum1, lum2) + 0.05) / (min(lum1, lum2) + 0.05)
+    
+    @commands.command(name="changecolor")
+    async def changecolor(self, context, color):
+        """
+        Allows the user to change the color of their nickname. Only usable in some servers.
+        """
+        try:
+            if context.message.guild.id != 856919397754470420 and context.message.guild.id != 850473081063211048:
+                return
+            
+            limit = 4
+            contrast = self.contrast("#36393f", color)
+
+            if contrast < limit:
+                embed = nextcord.Embed(
+                    title="Error",
+                    description="Color does not have enough contrast. That color has a contrast ratio of: " + str(round(contrast, 4)) + ":1. It needs to be above 4:1.",
+                    color=int(color.replace("#", ""), 16)
+                )
+                await context.send(embed=embed)
+                return
+            userRoles = context.message.author.roles
+
+            if len(userRoles) > 1:
+                topRole = userRoles[-1]
+                await topRole.edit(colour=nextcord.Colour(int(color.replace("#", ""), 16)))
+                embed = nextcord.Embed(
+                    title="Success!",
+                    description="Color has been changed! The contrast it has is " + str(round(contrast, 4)) + ":1",
+                    color=int(color.replace("#", ""), 16)
+                )
+                await context.send(embed=embed)
+        except:
+            embed = nextcord.Embed(
+                title="Error",
+                description="Something went wrong, make sure you are using a 6 digit hex code. (ex: !changecolor #FFFFFF)",
+                color=config["error"]
+            )
+            await context.send(embed=embed)
 
     @commands.command(name="remindme")
     async def remindme(self, context, *args):
@@ -178,7 +298,7 @@ class general(commands.Cog, name="general"):
         Get the invite link of the bot to be able to invite it to another server.
         """
         try:
-            await context.send(embed=summarizer.getSummary(config, url))
+            await context.send(embed=summarizer.getSummaryUrl(config, url))
         except:
              await context.send("There's something odd about that link. Either they won't let me read it or you sent it wrongly.")
 
@@ -222,7 +342,7 @@ class general(commands.Cog, name="general"):
         Create a poll where members can vote.
         """
         poll_title = " ".join(args)
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             title="A new poll has been created!",
             description=f"{poll_title}",
             color=config["success"]
@@ -245,7 +365,7 @@ class general(commands.Cog, name="general"):
                    'Signs point to yes.', 'Reply hazy, try again.', 'Ask again later.', 'Better not tell you now.',
                    'Cannot predict now.', 'Concentrate and ask again later.', 'Don\'t count on it.', 'My reply is no.',
                    'My sources say no.', 'Outlook not so good.', 'Very doubtful.']
-        embed = discord.Embed(
+        embed = nextcord.Embed(
             title="**My Answer:**",
             description=f"{answers[random.randint(0, len(answers) - 1)]}",
             color=config["success"]
@@ -266,7 +386,7 @@ class general(commands.Cog, name="general"):
             raw_response = await session.get(url)
             response = await raw_response.text()
             response = json.loads(response)
-            embed = discord.Embed(
+            embed = nextcord.Embed(
                 title=":information_source: Info",
                 description=f"Bitcoin price is: ${response['bpi']['USD']['rate']}",
                 color=config["success"]
